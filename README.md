@@ -24,7 +24,7 @@ cosign verify-blob \
 
 ## What this repository is not
 
-This repository contains the format specification only. The implementation that produces and applies bundles is proprietary, with source access available to design partners and accreditors under NDA. For the product, see [northfleet.tech](https://northfleet.tech).
+This repository contains the format specification only. The implementation that produces and applies bundles is proprietary, with source access available to design partners and accreditors under NDA. For the product, see [northfleetsecurity.ca](https://northfleetsecurity.ca).
 
 ## Versioning
 
@@ -36,4 +36,4 @@ Spec text copyright 2026 Brian Irish. Licensed under the [Apache License 2.0](LI
 
 ## Feedback
 
-Issues and corrections are welcome via the issue tracker. Questions about the product belong at [northfleet.tech](https://northfleet.tech), not here.
+Issues and corrections are welcome via the issue tracker. Questions about the product belong at [northfleetsecurity.ca](https://northfleetsecurity.ca), not here.
