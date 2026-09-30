@@ -1,12 +1,14 @@
 # Northfleet bundle format (`.nfb`)
 
-**Status: draft.** This document is published for review and verification purposes. Normative language may change until the 1.0 tag of this repository. The format schema documented is `schemaVersion: 1.0.0`.
+**Status: draft.** This document is published for review and verification purposes. Normative language may change until the 1.0 tag of this repository. The format schema documented is `schemaVersion: 1.0.0`; the spec's own Revisions section records every correction.
+
+The text here is published from the copy maintained alongside Northfleet's implementation and is refreshed at each release, so the two never differ.
 
 ## What this is
 
 The open specification for the Northfleet bundle format: the wire and at-rest format that moves a complete Kubernetes deployment from a connected build environment to an air-gapped target cluster, with a verifiable signature chain and tamper-evident structure.
 
-The spec is public for one reason: anyone receiving a Northfleet bundle should be able to verify it with stock tooling, without installing or trusting any Northfleet software. `tar(1)`, `jq(1)`, and `cosign verify-blob` are sufficient. An accreditor can audit the trust path from this document alone.
+The spec is public for one reason: anyone receiving a Northfleet bundle should be able to verify it with stock tooling, without installing or trusting any Northfleet software. For a bare-key bundle signed with Ed25519 or ECDSA P-256, `tar(1)`, `jq(1)`, `sha256sum(1)` and `cosign verify-blob` are sufficient; the spec says what a P-384 signature and a cert-chain bundle need. An accreditor can audit the trust path from this document alone.
 
 See [`BUNDLE-FORMAT.md`](BUNDLE-FORMAT.md) for the specification.
 
@@ -32,7 +34,7 @@ This repository contains the format specification only. The implementation that 
 
 ## License
 
-Spec text copyright 2026 Brian Irish. Licensed under the [Apache License 2.0](LICENSE).
+Spec text copyright 2026 Northfleet Security Ltd. Licensed under the [Apache License 2.0](LICENSE).
 
 ## Feedback
 
