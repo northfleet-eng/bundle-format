@@ -8,21 +8,29 @@ The text here is published from the copy maintained alongside Northfleet's imple
 
 The open specification for the Northfleet bundle format: the wire and at-rest format that moves a complete Kubernetes deployment from a connected build environment to an air-gapped target cluster, with a verifiable signature chain and tamper-evident structure.
 
-The spec is public for one reason: anyone receiving a Northfleet bundle should be able to verify it with stock tooling, without installing or trusting any Northfleet software. For a bare-key bundle signed with Ed25519 or ECDSA P-256, `tar(1)`, `jq(1)`, `sha256sum(1)` and `cosign verify-blob` are sufficient; the spec says what a P-384 signature and a cert-chain bundle need. An accreditor can audit the trust path from this document alone.
+The spec is public for one reason: anyone receiving a Northfleet bundle should be able to verify it with stock tooling, without installing or trusting any Northfleet software. For a bare-key bundle signed with Ed25519 or ECDSA P-256, or with ECDSA P-384 from cosign v3.1.4, `tar(1)`, `jq(1)`, `sha256sum(1)` and cosign are sufficient; the spec gives OpenSSL commands for a P-384 bundle with any cosign release, and says what a cert-chain bundle needs. An accreditor can audit the trust path from this document alone.
 
 See [`BUNDLE-FORMAT.md`](BUNDLE-FORMAT.md) for the specification.
 
 ## Quick verification example
 
+With cosign v3, package the detached signature as a Sigstore bundle, then verify it:
+
 ```sh
-cosign verify-blob \
-  --key operator.pub \
+cosign bundle create \
+  --artifact <bundleId>/manifest.json \
   --signature <bundleId>/manifest.json.sig \
+  --key operator.pub \
+  --ignore-tlog \
+  --out manifest.sigstore.json
+cosign verify-blob \
+  --bundle manifest.sigstore.json \
+  --key operator.pub \
   --insecure-ignore-tlog \
   <bundleId>/manifest.json
 ```
 
-(The `--insecure-ignore-tlog` flag reflects the air-gapped threat model: bundles are deliberately not registered in a public transparency log. See the spec's signing section.)
+`operator.pub` is the operator's public key, obtained over a channel you trust, never from the bundle. The `--ignore-tlog` and `--insecure-ignore-tlog` flags reflect the air-gapped threat model: bundles are deliberately not registered in a public transparency log. The spec's Signing section gives the cosign v2 form, what these commands do and do not check, and the OpenSSL commands for P-384.
 
 ## What this repository is not
 

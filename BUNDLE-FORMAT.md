@@ -6,12 +6,14 @@ target cluster. It is designed to be:
 
 - **Self-describing.** A single top-level `manifest.json` lists the bundle's
   manifests, images, SBOMs and policy with their content hashes.
-- **Inspectable with stock tools.** `tar(1)`, `jq(1)`, `sha256sum(1)` and
-  `cosign verify-blob` are sufficient to validate a bare-key bundle signed
-  with Ed25519 or ECDSA P-256, without installing any Northfleet-specific
-  software. A P-384 signature needs a verifier that hashes with SHA-384 (see
-  Signing), and a cert-chain bundle's certificates need an X.509 path
-  validator.
+- **Inspectable with stock tools.** Given the operator's public key from a
+  trusted channel, `tar(1)`, `jq(1)`, `sha256sum(1)` and cosign are
+  sufficient to validate a bare-key bundle signed with Ed25519 or ECDSA
+  P-256, provenance included, and, from cosign v3.1.4, one signed with
+  ECDSA P-384; the same tools with `openssl(1)` in place of cosign validate
+  a P-384 bundle with any cosign release. None of it needs
+  Northfleet-specific software (see Signing and Attestations). A cert-chain
+  bundle's certificates need an X.509 path validator.
 - **Canonical.** The bytes that get signed are the RFC 8785 (JCS) encoding of
   the manifest, so every producer encodes one manifest the same way.
 - **Forward-compatible.** `schemaVersion` gates additive evolution.
@@ -245,27 +247,76 @@ The default key, the one `nfctl init keygen` writes:
 
 ### Verifying with stock cosign
 
+`operator.pub` below is the operator's public key, obtained from the
+operator over a channel the verifier trusts, never from the bundle. These
+commands are for bare-key bundles: a key taken from a bundle's
+`manifest.json.cert` proves nothing until that certificate is validated to a
+trust anchor the verifier holds (Cert-chain mode).
+
+With cosign v3 (tested with v3.1.4), package the detached signature as a
+Sigstore bundle, then verify it:
+
+```sh
+cosign bundle create \
+  --artifact <bundleId>/manifest.json \
+  --signature <bundleId>/manifest.json.sig \
+  --key operator.pub \
+  --ignore-tlog \
+  --out manifest.sigstore.json
+cosign verify-blob \
+  --bundle manifest.sigstore.json \
+  --key operator.pub \
+  --insecure-ignore-tlog \
+  <bundleId>/manifest.json
+```
+
+`cosign bundle create` only packages the signature; it checks nothing.
+`cosign verify-blob` checks the signature over the stored `manifest.json`
+bytes and prints `Verified OK`. Neither command needs network access. The
+files `manifest.json` lists are then checked against its hashes with
+`sha256sum(1)`.
+
+The `--ignore-tlog` and `--insecure-ignore-tlog` flags are required because
+Northfleet bundles are not recorded in the public Rekor transparency log,
+which an air-gapped site cannot reach; without them, cosign goes to the
+network. Cosign's warning is accurate: without a log, cosign checks only
+that the key signed these bytes. It gives no evidence of when they were
+signed and no public record in which a signature made with a stolen key
+would show up, and a key is retired only by no longer distributing it.
+These commands also do not check the replay order (`previousBundleId`) or,
+in cert-chain mode, the certificate chain and CRL.
+
+cosign v2 (tested with v2.6.5) needs a Sigstore trusted root to verify a
+Sigstore bundle, and fetches one over the network. Without network access,
+use the detached-signature form instead, which cosign v2 accepts and cosign
+v3 deprecates. Offline, cosign v2 first warns that it could not fetch
+`trusted_root.json` from the TUF repository, then verifies:
+
 ```sh
 cosign verify-blob \
-  --key cosign.pub \
+  --key operator.pub \
   --signature <bundleId>/manifest.json.sig \
   --insecure-ignore-tlog \
   <bundleId>/manifest.json
 ```
 
-The `--insecure-ignore-tlog` flag is required because Northfleet bundles
-are produced for air-gapped deployment and are not registered in the
-public Rekor transparency log. Cosign's "insecure" warning here is a
-misnomer for this threat model: we deliberately do not depend on a
-publicly reachable log.
-
 Other signing keys are ECDSA P-256 and P-384. The signature is base64
 (StdEncoding) of the ASN.1 DER `ECDSA-Sig-Value` over the SHA-256 (P-256) or
 SHA-384 (P-384) digest of the `manifest.json` bytes. The public key's type
 and curve select the algorithm; the signature carries no algorithm
-identifier. No other key types are defined. `cosign verify-blob --key`
-(v3.1.3) verifies Ed25519 and P-256 signatures but not P-384 ones, because it
-hashes with SHA-256.
+identifier. No other key types are defined. The cosign commands above
+verify Ed25519 and P-256 signatures, and P-384 ones from cosign v3.1.4,
+which hashes with the key's own hash. Earlier releases hash with SHA-256
+whatever the key, unless given `--signature-digest-algorithm`, which cosign
+v3 deprecates, so they refuse a P-384 signature. OpenSSL verifies a P-384
+signature with any cosign release or none: decode it from base64, then
+check it over the stored bytes.
+
+```sh
+openssl base64 -d -A -in <bundleId>/manifest.json.sig -out manifest.sig.der
+openssl dgst -sha384 -verify operator.pub -signature manifest.sig.der \
+  <bundleId>/manifest.json
+```
 
 A key may be held on hardware; the signature format does not change. There
 is no transparency-log entry for a bundle signature, public or private.
@@ -287,9 +338,78 @@ populates two fields per the SLSA v1.0 request/resolved split:
 build-from request) and a `buildDefinition.resolvedDependencies` entry
 `{"name": "source", "uri": "git+<source-uri>@<source-ref>", "digest": {"gitCommit": "<source-commit>"}}`
 (the immutable resolved commit, using the in-toto `gitCommit` digest-set type).
-This representation is what `slsa-verifier` and stock SLSA-aware consumers expect,
-and the attestation can be verified with `cosign verify-blob` or `slsa-verifier`
-against the operator public key without Northfleet tooling.
+
+The envelope is verifiable against the operator public key without Northfleet
+tooling. As in Signing, `operator.pub` comes from the operator over a trusted
+channel, never from the bundle. With cosign v3 (tested with v3.1.4) and an
+Ed25519 or P-256 key, wrap the envelope (at the path
+`attestations.slsaProvenance` names; nfctl writes
+`attestations/slsa-provenance.intoto.jsonl`) as a Sigstore bundle, keeping only
+each signature's `sig`, then verify it. DSSE signs only the payload type and
+the payload, so `keyid` is an unsigned hint and dropping it changes nothing
+that is verified. cosign v3 does not accept the signature while nfctl's
+`keyid` is present, as it is not the key ID cosign derives from the key.
+
+```sh
+jq '{mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+     verificationMaterial: {publicKey: {hint: ""}},
+     dsseEnvelope: {payload, payloadType, signatures: [.signatures[] | {sig}]}}' \
+  <bundleId>/attestations/slsa-provenance.intoto.jsonl > provenance.sigstore.json
+cosign verify-blob-attestation \
+  --bundle provenance.sigstore.json \
+  --key operator.pub \
+  --type slsaprovenance1 \
+  --insecure-ignore-tlog \
+  <bundleId>/manifest.json
+```
+
+`cosign verify-blob-attestation` checks the DSSE signature, the predicate type
+and that the statement's subject digest is the SHA-256 of the stored
+`manifest.json`, and prints `Verified OK`. It needs no network access. It
+does not check the source claim against anything: compare it with the source
+you expect by reading it.
+
+```sh
+jq -r .payload <bundleId>/attestations/slsa-provenance.intoto.jsonl | base64 -d \
+  | jq '.predicate.buildDefinition | {externalParameters, resolvedDependencies}'
+```
+
+cosign v2 (tested with v2.6.5) verifies the envelope itself without network
+access, after the same TUF warning as for the manifest signature:
+
+```sh
+cosign verify-blob-attestation \
+  --key operator.pub \
+  --signature <bundleId>/attestations/slsa-provenance.intoto.jsonl \
+  --type slsaprovenance1 \
+  --insecure-ignore-tlog \
+  <bundleId>/manifest.json
+```
+
+As with the manifest signature, the cosign commands above verify a P-384
+envelope, which is signed over SHA-384, from cosign v3.1.4; earlier
+releases refuse it. OpenSSL verifies it with any release: rebuild
+the DSSE pre-authentication encoding (PAE) of the payload, check the
+signature over it, then check the statement's predicate type and subject.
+The last command prints `true`.
+
+```sh
+env=<bundleId>/attestations/slsa-provenance.intoto.jsonl
+jq -j .payload "$env" | openssl base64 -d -A -out payload.json
+type=$(jq -r .payloadType "$env")
+printf 'DSSEv1 %d %s %d ' "${#type}" "$type" "$(wc -c < payload.json | tr -d ' ')" > pae.bin
+cat payload.json >> pae.bin
+jq -j '.signatures[0].sig' "$env" | openssl base64 -d -A -out envelope.sig.der
+openssl dgst -sha384 -verify operator.pub -signature envelope.sig.der pae.bin
+jq -e --arg d "$(openssl dgst -sha256 -r <bundleId>/manifest.json | cut -d' ' -f1)" \
+  '.predicateType == "https://slsa.dev/provenance/v1" and .subject[0].digest.sha256 == $d' \
+  payload.json
+```
+
+`slsa-verifier` does not verify this provenance: it verifies provenance only
+against the signing identities of the builders it knows, and cannot be given
+the operator public key for it (its one public-key option, `verify-vsa`, is
+for verification summary attestations).
 
 The source claim is **operator-asserted (SLSA Build L1)**: it is as trustworthy
 as the signing key. nfctl produces no CI-signed bundle provenance. nfctl does
@@ -358,3 +478,17 @@ ignored by verifiers but preserved through the canonicalization round-trip.
   limit reasons or name a cRLIssuer, and any CRL, or a required CRL, for a
   leaf that is itself a trust anchor (Cert-chain mode, step 3). Bundles carrying such a CRL, which nfctl v0.4.0 accepted, now
   fail verification.
+- **2026-09-30. Correction, schemaVersion unchanged (`1.0.0`).** Earlier text
+  said the SLSA provenance envelope can be verified against the operator public
+  key with `cosign verify-blob` or `slsa-verifier`. `cosign verify-blob` does not
+  accept the envelope as stored, and `slsa-verifier` verifies provenance only
+  against the signing identities of the builders it knows, not against an
+  operator key. Attestations now gives stock commands that verify it: cosign
+  for an Ed25519 or P-256 key, OpenSSL for a P-384 key. No bundle is affected,
+  and what a verifier checks does not change.
+- **2026-11-02. Correction, schemaVersion unchanged (`1.0.0`).** Earlier
+  text said the cosign commands do not verify a P-384 signature or
+  provenance envelope. From cosign v3.1.4 they do, since `verify-blob` hashes
+  with the key's own hash; earlier releases still refuse them, and the
+  OpenSSL commands work with any release. No bundle is affected, and what a
+  verifier checks does not change.
