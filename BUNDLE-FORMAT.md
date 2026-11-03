@@ -120,7 +120,7 @@ Field-by-field:
 | `target.namespace` | yes | string | Namespace the bundle applies to. |
 | `target.application` | yes | string | Application identifier within the namespace. |
 | `target.kubernetesVersion` | no | string | Semver constraint. Advisory: `bundle inspect` shows it; apply does not parse or check it. |
-| `contents.manifests` | yes | array | Each entry has `path` (relative to bundle root) and `sha256` (lowercase hex of file contents). |
+| `contents.manifests` | yes | array | Each entry has `path` and `sha256` (lowercase hex of file contents). `path` is `manifests/` followed by a file name that ends in `.yaml` or `.yml` and contains no `/`, `\` or NUL: a manifest is a file directly under `manifests/`. Verifiers MUST refuse a bundle that lists any other manifest path. Nested directories are reserved for a later format version. |
 | `contents.images` | yes | array | Each entry has `reference` (the image reference as the manifests name it), `digest` (`sha256:` plus the lowercase hex SHA-256 of the image's OCI manifest blob) and `ociLayoutPath` (the bundle-relative path of that blob, under `images/`). Empty when the bundle carries no images. |
 | `contents.sboms` | yes | array | Each entry has `imageRef`, `path` and `sha256`. Empty when the bundle carries no SBOMs. |
 | `contents.policy` | no | object | `path` and `sha256` (lowercase hex) of the embedded Rego policy file. This entry is what binds the file: a producer that sets `policy` MUST set `contents.policy` with the same `path`. The policy calls only the OPA builtins its consumer allows and declares no METADATA schemas. nfctl allows a fixed list of builtins, documented with nfctl, none of which reads anything but its arguments and the policy itself (no network, host, clock, randomness or cryptography builtins); it will not embed a policy that calls another builtin or declares METADATA schemas, and with `--verify-policy` fails the policy check of a bundle whose policy does. |
@@ -149,8 +149,11 @@ A bundle may be signed in one of two modes:
 
 `manifest.json.sig` is verified directly against an operator public key
 delivered out-of-band (verifier flag: `--public-key operator.pub`). No
-`manifest.json.cert` is present. Acceptable for non-classified demos and
-CI; not acceptable for any accredited deployment.
+`manifest.json.cert` is present. The signature shows that the bundle was
+signed with the key the verifier holds. The signer's identity is the
+manifest's `createdBy`, as the producer declares it: in this mode it is
+declared, not authenticated. A deployment that requires an authenticated
+individual signer uses cert-chain mode.
 
 ### Cert-chain mode
 
@@ -439,6 +442,13 @@ writes are listed under Revisions, dated, and leave `schemaVersion`
 unchanged. A correction can make a verifier stricter; its entry says which
 bundles it affects.
 
+A verifier reads the format versions it implements and refuses a bundle of
+any other version, a later 1.y included, saying that a verifier for that
+version is needed. It never reads a later version by skipping what it does
+not know, since a later version may add something a verifier must check. A
+producer writes the earliest version that describes the bundle, so a
+bundle that uses no later feature can be read by every 1.x verifier.
+
 `nfctl` produces and consumes `schemaVersion: "1.0.0"` exclusively.
 
 ## Reserved field names
@@ -450,8 +460,19 @@ used by third-party extensions:
 `target`, `contents`, `attestations`, `policy`, `previousBundleId`,
 `signingAlgorithm`, `signatures`.
 
-Extensions MAY use a `x-` prefix for experimental keys. These keys are
-ignored by verifiers but preserved through the canonicalization round-trip.
+Within `attestations`, two names are reserved for later format versions:
+`buildProvenance`, for SLSA provenance signed by a build platform rather
+than the operator (SLSA Build L3), and `inTotoLinks`, for in-toto link
+metadata. `slsaProvenance` names the operator-signed envelope in every 1.x
+version.
+
+A key this spec does not define, at the top level or inside any object,
+makes the manifest invalid, and verifiers MUST refuse the bundle. This
+includes a reserved name the version does not define, such as
+`signatures` or `attestations.inTotoLinks` in 1.0.0. The exception is an
+experimental key: extensions MAY use keys starting with `x-`, at any
+level. These keys, and anything under them, are ignored by verifiers but
+preserved through the canonicalization round-trip.
 
 ## Revisions
 
@@ -492,3 +513,33 @@ ignored by verifiers but preserved through the canonicalization round-trip.
   with the key's own hash; earlier releases still refuse them, and the
   OpenSSL commands work with any release. No bundle is affected, and what a
   verifier checks does not change.
+- **2026-11-02. Correction (security), schemaVersion unchanged (`1.0.0`).**
+  Earlier text let a manifest entry's `path` be any bundle-relative path, so
+  a bundle could list a file in a nested directory, the embedded policy or
+  an SBOM as a Kubernetes manifest for the consumer to apply. A manifest
+  path is now a `.yaml` or `.yml` file directly under `manifests/`, and a
+  verifier refuses any other. nfctl's `bundle create` has only ever written
+  such paths, except for a manifest whose file name contains a backslash;
+  a bundle listing another path, which nfctl v0.5.1 and earlier verified,
+  now fails verification.
+- **2026-11-02. Correction (security), schemaVersion unchanged (`1.0.0`).**
+  Earlier text did not say what a verifier does with a manifest key this
+  spec does not define, or with a later 1.y `schemaVersion`. A key the spec
+  does not define, other than an `x-` key, now makes the manifest invalid,
+  and a verifier refuses a version it does not implement rather than read
+  it by skipping unknown keys (Versioning policy, Reserved field names).
+  `attestations.inTotoLinks` is reserved. nfctl has never written such a
+  key; a bundle carrying one, which nfctl v0.5.1 and earlier verified while
+  ignoring it, now fails verification.
+- **2026-11-02. Correction, schemaVersion unchanged (`1.0.0`).**
+  `attestations.buildProvenance` is reserved for provenance a build
+  platform signs (SLSA Build L3), so it never shares a field with the
+  operator-signed `slsaProvenance`, and a verifier judges each against its
+  own trust input. No bundle is affected.
+- **2026-11-02. Correction, schemaVersion unchanged (`1.0.0`).** Earlier
+  text said bare-key mode is not acceptable for any accredited deployment.
+  Whether a signing arrangement is acceptable for a deployment is the
+  deploying organization's and its assessor's decision. Bare-key mode now
+  says what it establishes and what it does not: the key, not an
+  authenticated signer. No bundle is affected, and what a verifier checks
+  does not change.
